@@ -1,0 +1,369 @@
+name: Performance Monitoring
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  performance-check:
+    name: Performance Regression Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Run performance tests
+        run: |
+          echo "⚡ Running performance tests..."
+          flutter test test/performance/ --reporter expanded
+          echo "✅ Performance tests completed"
+
+      - name: Generate performance report
+        id: perf_report
+        run: |
+          echo "📊 Generating performance report..."
+          
+          # Run performance monitoring test that exports metrics
+          flutter test test/performance/performance_monitoring_test.dart --reporter expanded
+          
+          # Check if metrics file was generated
+          if [ -f "performance_metrics.json" ]; then
+            echo "✅ Performance metrics generated"
+            
+            # Extract key metrics for GitHub Actions output
+            COLD_START=$(jq -r '.cold_start_ms // "N/A"' performance_metrics.json)
+            MEMORY=$(jq -r '.memory_mb // "N/A"' performance_metrics.json)
+            FPS=$(jq -r '.fps // "N/A"' performance_metrics.json)
+            MEETS_TARGETS=$(jq -r '.meets_targets // false' performance_metrics.json)
+            
+            echo "cold_start=$COLD_START" >> $GITHUB_OUTPUT
+            echo "memory=$MEMORY" >> $GITHUB_OUTPUT
+            echo "fps=$FPS" >> $GITHUB_OUTPUT
+            echo "meets_targets=$MEETS_TARGETS" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Performance metrics file not found"
+            echo "meets_targets=unknown" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Check performance thresholds
+        id: threshold_check
+        run: |
+          if [ ! -f "performance_metrics.json" ]; then
+            echo "⚠️ No performance metrics available"
+            echo "status=unknown" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # Check if performance targets are met
+          MEETS_TARGETS=$(jq -r '.meets_targets' performance_metrics.json)
+          ALERT_COUNT=$(jq -r '.alerts | length' performance_metrics.json)
+          ERROR_COUNT=$(jq -r '[.alerts[] | select(.severity == "error")] | length' performance_metrics.json)
+          
+          echo "Performance targets met: $MEETS_TARGETS"
+          echo "Total alerts: $ALERT_COUNT"
+          echo "Error alerts: $ERROR_COUNT"
+          
+          if [ "$ERROR_COUNT" -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ Performance regressions detected!"
+            
+            # List errors
+            echo "Errors:"
+            jq -r '.alerts[] | select(.severity == "error") | "  - \(.metric): \(.message)"' performance_metrics.json
+            
+            # Fail the workflow for performance regressions
+            exit 1
+          elif [ "$ALERT_COUNT" -gt 0 ]; then
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "⚠️ Performance warnings detected"
+            
+            # List warnings
+            echo "Warnings:"
+            jq -r '.alerts[] | select(.severity == "warning") | "  - \(.metric): \(.message)"' performance_metrics.json
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ All performance targets met!"
+          fi
+        continue-on-error: false
+
+      - name: Upload performance metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-metrics
+          path: performance_metrics.json
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Generate performance summary
+        if: always()
+        run: |
+          if [ ! -f "performance_metrics.json" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## ⚠️ Performance Metrics Unavailable
+          
+          Performance metrics could not be generated. This may be due to:
+          - Test execution failure
+          - Missing performance monitoring integration
+          - Configuration issues
+          
+          Please check the test logs for more details.
+          EOF
+            exit 0
+          fi
+          
+          # Generate summary from metrics
+          cat >> $GITHUB_STEP_SUMMARY << 'EOF'
+          ## 📊 Performance Report
+          
+          EOF
+          
+          # Check overall status
+          MEETS_TARGETS=$(jq -r '.meets_targets' performance_metrics.json)
+          if [ "$MEETS_TARGETS" = "true" ]; then
+            echo "✅ **All performance targets met!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Performance regressions detected**" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Key metrics
+          echo "### Key Metrics" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          COLD_START=$(jq -r '.cold_start_ms // "N/A"' performance_metrics.json)
+          if [ "$COLD_START" != "N/A" ] && [ "$COLD_START" != "null" ]; then
+            if [ "$COLD_START" -le 2000 ]; then
+              echo "- ✅ **Cold Start:** ${COLD_START}ms (target: <2000ms)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ **Cold Start:** ${COLD_START}ms (target: <2000ms)" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          MEMORY=$(jq -r '.memory_mb // "N/A"' performance_metrics.json)
+          if [ "$MEMORY" != "N/A" ] && [ "$MEMORY" != "null" ]; then
+            if [ "$MEMORY" -le 100 ]; then
+              echo "- ✅ **Memory Usage:** ${MEMORY}MB (target: <100MB)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ **Memory Usage:** ${MEMORY}MB (target: <100MB)" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          FPS=$(jq -r '.fps // "N/A"' performance_metrics.json)
+          if [ "$FPS" != "N/A" ] && [ "$FPS" != "null" ] && [ "$FPS" != "0" ]; then
+            FPS_INT=$(echo "$FPS" | cut -d. -f1)
+            if [ "$FPS_INT" -ge 54 ]; then
+              echo "- ✅ **Frame Rate:** ${FPS} FPS (target: 60 FPS)" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- ❌ **Frame Rate:** ${FPS} FPS (target: 60 FPS)" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Interaction stats
+          INTERACTION_COUNT=$(jq -r '.interactions | length' performance_metrics.json)
+          if [ "$INTERACTION_COUNT" -gt 0 ]; then
+            echo "### Interaction Performance" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Interaction | Count | Avg Duration |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------------|-------|--------------|" >> $GITHUB_STEP_SUMMARY
+            
+            jq -r '.interactions | to_entries[] | "| \(.key) | \(.value.count) | \(.value.avg_ms)ms |"' performance_metrics.json >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Alerts
+          ALERT_COUNT=$(jq -r '.alerts | length' performance_metrics.json)
+          if [ "$ALERT_COUNT" -gt 0 ]; then
+            echo "### 🚨 Alerts" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            ERROR_COUNT=$(jq -r '[.alerts[] | select(.severity == "error")] | length' performance_metrics.json)
+            if [ "$ERROR_COUNT" -gt 0 ]; then
+              echo "#### Errors" >> $GITHUB_STEP_SUMMARY
+              jq -r '.alerts[] | select(.severity == "error") | "- ❌ **\(.metric):** \(.message)"' performance_metrics.json >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            WARNING_COUNT=$(jq -r '[.alerts[] | select(.severity == "warning")] | length' performance_metrics.json)
+            if [ "$WARNING_COUNT" -gt 0 ]; then
+              echo "#### Warnings" >> $GITHUB_STEP_SUMMARY
+              jq -r '.alerts[] | select(.severity == "warning") | "- ⚠️ **\(.metric):** \(.message)"' performance_metrics.json >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          # Recommendations
+          if [ "$MEETS_TARGETS" != "true" ]; then
+            echo "### 💡 Recommendations" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- Review performance test logs for detailed analysis" >> $GITHUB_STEP_SUMMARY
+            echo "- Check for memory leaks and optimize resource usage" >> $GITHUB_STEP_SUMMARY
+            echo "- Profile slow operations and optimize critical paths" >> $GITHUB_STEP_SUMMARY
+            echo "- Consider lazy loading and virtual scrolling for large datasets" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (!fs.existsSync('performance_metrics.json')) {
+              console.log('No performance metrics available');
+              return;
+            }
+            
+            const metrics = JSON.parse(fs.readFileSync('performance_metrics.json', 'utf8'));
+            
+            let comment = '## 📊 Performance Report\n\n';
+            
+            if (metrics.meets_targets) {
+              comment += '✅ **All performance targets met!**\n\n';
+            } else {
+              comment += '❌ **Performance regressions detected**\n\n';
+            }
+            
+            comment += '### Key Metrics\n\n';
+            
+            if (metrics.cold_start_ms) {
+              const icon = metrics.cold_start_ms <= 2000 ? '✅' : '❌';
+              comment += `- ${icon} **Cold Start:** ${metrics.cold_start_ms}ms (target: <2000ms)\n`;
+            }
+            
+            if (metrics.memory_mb) {
+              const icon = metrics.memory_mb <= 100 ? '✅' : '❌';
+              comment += `- ${icon} **Memory Usage:** ${metrics.memory_mb}MB (target: <100MB)\n`;
+            }
+            
+            if (metrics.fps && metrics.fps > 0) {
+              const icon = metrics.fps >= 54 ? '✅' : '❌';
+              comment += `- ${icon} **Frame Rate:** ${metrics.fps.toFixed(1)} FPS (target: 60 FPS)\n`;
+            }
+            
+            if (metrics.alerts && metrics.alerts.length > 0) {
+              comment += '\n### 🚨 Alerts\n\n';
+              
+              const errors = metrics.alerts.filter(a => a.severity === 'error');
+              const warnings = metrics.alerts.filter(a => a.severity === 'warning');
+              
+              if (errors.length > 0) {
+                comment += '#### Errors\n';
+                errors.forEach(alert => {
+                  comment += `- ❌ **${alert.metric}:** ${alert.message}\n`;
+                });
+                comment += '\n';
+              }
+              
+              if (warnings.length > 0) {
+                comment += '#### Warnings\n';
+                warnings.forEach(alert => {
+                  comment += `- ⚠️ **${alert.metric}:** ${alert.message}\n`;
+                });
+                comment += '\n';
+              }
+            }
+            
+            comment += '\n---\n';
+            comment += '*Performance metrics are automatically generated on each push.*';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+        continue-on-error: true
+
+  performance-trend:
+    name: Performance Trend Analysis
+    needs: performance-check
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download performance metrics
+        uses: actions/download-artifact@v4
+        with:
+          name: performance-metrics
+
+      - name: Store performance history
+        run: |
+          # Create performance history directory
+          mkdir -p .performance-history
+          
+          # Copy current metrics with timestamp
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          cp performance_metrics.json ".performance-history/metrics_${TIMESTAMP}.json"
+          
+          echo "📈 Performance metrics stored for trend analysis"
+
+      - name: Analyze performance trends
+        run: |
+          echo "📊 Analyzing performance trends..."
+          
+          # Count metrics files
+          METRIC_COUNT=$(ls -1 .performance-history/*.json 2>/dev/null | wc -l)
+          
+          if [ "$METRIC_COUNT" -lt 2 ]; then
+            echo "⚠️ Not enough historical data for trend analysis (need at least 2 data points)"
+            exit 0
+          fi
+          
+          echo "Found $METRIC_COUNT historical data points"
+          
+          # Simple trend analysis (compare with previous run)
+          LATEST=$(ls -t .performance-history/*.json | head -1)
+          PREVIOUS=$(ls -t .performance-history/*.json | head -2 | tail -1)
+          
+          echo "Comparing:"
+          echo "  Latest: $LATEST"
+          echo "  Previous: $PREVIOUS"
+          
+          # Extract and compare key metrics
+          LATEST_MEMORY=$(jq -r '.memory_mb // 0' "$LATEST")
+          PREVIOUS_MEMORY=$(jq -r '.memory_mb // 0' "$PREVIOUS")
+          
+          if [ "$LATEST_MEMORY" -gt "$PREVIOUS_MEMORY" ]; then
+            MEMORY_CHANGE=$((LATEST_MEMORY - PREVIOUS_MEMORY))
+            echo "⚠️ Memory usage increased by ${MEMORY_CHANGE}MB"
+          elif [ "$LATEST_MEMORY" -lt "$PREVIOUS_MEMORY" ]; then
+            MEMORY_CHANGE=$((PREVIOUS_MEMORY - LATEST_MEMORY))
+            echo "✅ Memory usage decreased by ${MEMORY_CHANGE}MB"
+          else
+            echo "➡️ Memory usage unchanged"
+          fi
+        continue-on-error: true
+
+      - name: Upload performance history
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-history
+          path: .performance-history/
+          retention-days: 90
+        continue-on-error: true

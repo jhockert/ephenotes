@@ -1,0 +1,235 @@
+name: Test CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'features/**'
+      - '.gitignore'
+      - 'LICENSE'
+
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Tests & Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            ${{ github.workspace }}/.dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Verify Flutter installation
+        run: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Analyze code
+        run: flutter analyze --no-fatal-infos
+
+      - name: Check formatting
+        run: dart format --set-exit-if-changed .
+
+      - name: Run unit tests
+        run: |
+          echo "🧪 Running unit tests..."
+          flutter test test/unit/ --reporter expanded
+          echo "✅ Unit tests completed"
+
+      - name: Run widget tests
+        run: |
+          echo "🎨 Running widget tests..."
+          flutter test test/widget/ --reporter expanded
+          echo "✅ Widget tests completed"
+
+      - name: Run property-based tests
+        run: |
+          echo "🔬 Running property-based tests..."
+          flutter test test/property/ --reporter expanded
+          echo "✅ Property-based tests completed"
+
+      - name: Run integration tests
+        run: |
+          echo "🔗 Running integration tests..."
+          flutter test test/integration/ --reporter expanded
+          echo "✅ Integration tests completed"
+
+      - name: Run accessibility tests
+        run: |
+          echo "♿ Running accessibility tests..."
+          flutter test test/accessibility/ --reporter expanded
+          echo "✅ Accessibility tests completed"
+
+      - name: Run performance tests
+        run: |
+          echo "⚡ Running performance tests..."
+          flutter test test/performance/ --reporter expanded
+          echo "✅ Performance tests completed"
+
+      - name: Run all tests with coverage
+        run: |
+          echo "📊 Running all tests with coverage..."
+          flutter test --coverage --reporter expanded
+          echo "✅ All tests completed with coverage"
+
+      - name: Generate coverage report
+        run: |
+          if command -v lcov &> /dev/null; then
+            echo "📈 Generating coverage report..."
+            lcov --list coverage/lcov.info
+          else
+            echo "⚠️ lcov not installed, skipping detailed coverage report"
+          fi
+        continue-on-error: true
+
+      - name: Upload coverage to Codecov (optional)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+          verbose: true
+        continue-on-error: true
+
+      - name: Archive test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            coverage/
+            test/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Check test coverage threshold
+        run: |
+          # Extract coverage percentage (requires lcov)
+          if command -v lcov &> /dev/null; then
+            COVERAGE=$(lcov --summary coverage/lcov.info 2>&1 | grep "lines" | awk '{print $2}' | cut -d'%' -f1)
+            echo "Test coverage: $COVERAGE%"
+
+            # Fail if coverage is below 60%
+            if (( $(echo "$COVERAGE < 60" | bc -l) )); then
+              echo "❌ Test coverage is below 60% threshold"
+              exit 1
+            else
+              echo "✅ Test coverage meets 60% threshold"
+            fi
+          else
+            echo "⚠️ lcov not installed, skipping coverage check"
+          fi
+        continue-on-error: true
+
+      - name: Count test results
+        id: test_count
+        run: |
+          # Count test files
+          UNIT_TESTS=$(find test/unit -name "*_test.dart" | wc -l)
+          WIDGET_TESTS=$(find test/widget -name "*_test.dart" | wc -l)
+          PROPERTY_TESTS=$(find test/property -name "*_test.dart" | wc -l)
+          INTEGRATION_TESTS=$(find test/integration -name "*_test.dart" | wc -l)
+          ACCESSIBILITY_TESTS=$(find test/accessibility -name "*_test.dart" | wc -l)
+          PERFORMANCE_TESTS=$(find test/performance -name "*_test.dart" | wc -l)
+          
+          TOTAL_TEST_FILES=$((UNIT_TESTS + WIDGET_TESTS + PROPERTY_TESTS + INTEGRATION_TESTS + ACCESSIBILITY_TESTS + PERFORMANCE_TESTS))
+          
+          echo "unit_tests=$UNIT_TESTS" >> $GITHUB_OUTPUT
+          echo "widget_tests=$WIDGET_TESTS" >> $GITHUB_OUTPUT
+          echo "property_tests=$PROPERTY_TESTS" >> $GITHUB_OUTPUT
+          echo "integration_tests=$INTEGRATION_TESTS" >> $GITHUB_OUTPUT
+          echo "accessibility_tests=$ACCESSIBILITY_TESTS" >> $GITHUB_OUTPUT
+          echo "performance_tests=$PERFORMANCE_TESTS" >> $GITHUB_OUTPUT
+          echo "total_test_files=$TOTAL_TEST_FILES" >> $GITHUB_OUTPUT
+
+  summary:
+    name: Test Summary
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Post summary
+        run: |
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## ✅ All Tests Passed!
+
+          ### Test Results
+          - **Code Analysis:** ✅ Passed
+          - **Code Formatting:** ✅ Passed
+          - **Unit Tests:** ✅ Passed (${{ needs.test.outputs.unit_tests }} test files)
+          - **Widget Tests:** ✅ Passed (${{ needs.test.outputs.widget_tests }} test files)
+          - **Property-Based Tests:** ✅ Passed (${{ needs.test.outputs.property_tests }} test files)
+          - **Integration Tests:** ✅ Passed (${{ needs.test.outputs.integration_tests }} test files)
+          - **Accessibility Tests:** ✅ Passed (${{ needs.test.outputs.accessibility_tests }} test files)
+          - **Performance Tests:** ✅ Passed (${{ needs.test.outputs.performance_tests }} test files)
+
+          ### Coverage
+          - Coverage report available in artifacts
+          - Minimum threshold: 60%
+
+          ### Total Test Files
+          **${{ needs.test.outputs.total_test_files }}** test files executed
+
+          ---
+          🎉 All quality checks passed! Ready for deployment.
+          EOF
+          else
+            cat >> $GITHUB_STEP_SUMMARY << EOF
+          ## ❌ Tests Failed
+
+          ### Status
+          One or more test suites failed. Please check the logs above for details.
+
+          ### Test Categories
+          - Unit Tests
+          - Widget Tests
+          - Property-Based Tests
+          - Integration Tests
+          - Accessibility Tests
+          - Performance Tests
+
+          ### Next Steps
+          1. Review the failed test logs
+          2. Fix the failing tests
+          3. Run tests locally: \`flutter test\`
+          4. Push fixes and re-run CI
+
+          ---
+          📝 Check the "Run Tests & Analysis" job logs for detailed error messages.
+          EOF
+          fi

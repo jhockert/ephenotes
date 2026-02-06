@@ -1,0 +1,79 @@
+# Fastlane configuration for ephenotes Android
+# Documentation: https://docs.fastlane.tools
+
+default_platform(:android)
+
+platform :android do
+  desc "Build Android App Bundle"
+  lane :build do
+    gradle(
+      task: "bundle",
+      build_type: "Release",
+      project_dir: "android/"
+    )
+  end
+
+  desc "Deploy to Play Console Internal Testing"
+  lane :internal do
+    upload_to_play_store(
+      track: 'internal',
+      aab: 'build/app/outputs/bundle/release/app-release.aab',
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      json_key: 'android/service-account.json'
+    )
+  end
+
+  desc "Deploy to Play Console Beta (Open Testing)"
+  lane :beta do
+    upload_to_play_store(
+      track: 'beta',
+      aab: 'build/app/outputs/bundle/release/app-release.aab',
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      json_key: 'android/service-account.json'
+    )
+  end
+
+  desc "Deploy to Play Console Production"
+  lane :production do
+    upload_to_play_store(
+      track: 'production',
+      aab: 'build/app/outputs/bundle/release/app-release.aab',
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      json_key: 'android/service-account.json'
+    )
+  end
+
+  desc "Promote from Beta to Production"
+  lane :promote_to_production do
+    upload_to_play_store(
+      track: 'beta',
+      track_promote_to: 'production',
+      skip_upload_aab: true,
+      json_key: 'android/service-account.json'
+    )
+  end
+
+  desc "Build and deploy to Internal Testing"
+  lane :deploy_internal do
+    build
+    internal
+  end
+
+  desc "Build and deploy to Beta"
+  lane :deploy_beta do
+    build
+    beta
+  end
+
+  desc "Build and deploy to Production"
+  lane :deploy_production do
+    build
+    production
+  end
+end
