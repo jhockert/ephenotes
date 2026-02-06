@@ -378,7 +378,8 @@ class _NotesListScreenState extends State<NotesListScreen> {
     context.read<NotesBloc>().add(ArchiveNote(note.id));
 
     // Show undo snackbar with 3 second duration
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
       SnackBar(
         content: const Text(UiStrings.noteArchived),
         action: SnackBarAction(
@@ -392,6 +393,12 @@ class _NotesListScreenState extends State<NotesListScreen> {
         duration: const Duration(seconds: 3),
       ),
     );
+
+    // Force dismiss after duration even when accessibleNavigation is true
+    // (Samsung devices often report this due to background services)
+    Future.delayed(const Duration(seconds: 3), () {
+      messenger.hideCurrentSnackBar();
+    });
   }
 
   IconData _getThemeIcon(ThemeMode themeMode) {

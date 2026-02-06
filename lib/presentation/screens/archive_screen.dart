@@ -8,6 +8,7 @@ import 'package:ephenotes/presentation/widgets/virtual_note_list.dart';
 import 'package:ephenotes/presentation/widgets/swipeable_note_card.dart';
 import 'package:ephenotes/data/models/note.dart';
 import 'package:ephenotes/core/utils/performance_monitor.dart';
+import 'package:ephenotes/core/utils/accessibility_helper.dart';
 
 /// Screen displaying archived notes.
 ///
@@ -46,8 +47,11 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
       body: BlocBuilder<NotesBloc, NotesState>(
         builder: (context, state) {
           if (state is NotesLoading) {
-            return const Center(
-              child: CircularProgressIndicator(),
+            return Semantics(
+              label: AccessibilityHelper.getLoadingSemanticLabel(),
+              child: const Center(
+                child: CircularProgressIndicator(),
+              ),
             );
           }
 
